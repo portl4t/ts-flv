@@ -1,0 +1,8 @@
+
+*.so
+*.lo
+*.o
+*.swp
+build/
+old/
+
