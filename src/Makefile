@@ -1,6 +1,6 @@
 .SUFFIXES: .cc .o .lo
 
-COMPILE = $(CXX) -Wall -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -g -O
+COMPILE = $(CXX) -Wall -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -g
 INC_PATH =
 LIB_PATH = -L/usr/local/lib
 
