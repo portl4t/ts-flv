@@ -1,62 +1,96 @@
 
-#include "flv_common.h"
+#include "flv_tag.h"
 
 
 static int64_t IOBufferReaderCopy(TSIOBufferReader readerp, void *buf, int64_t length);
 
 
-void
-FlvTransformContext::init()
+int
+FlvTag::process_tag(TSIOBufferReader readerp, bool complete)
 {
-    this->current_handler = &FlvTransformContext::process_header;
+    int64_t     avail, head_avail;
+    int         rc;
+
+    avail = TSIOBufferReaderAvail(readerp);
+    TSIOBufferCopy(tag_buffer, readerp, avail, 0);
+
+    TSIOBufferReaderConsume(readerp, avail);
+
+    rc = (this->*current_handler)();
+
+    if (rc == 0 && complete) {
+        rc = -1;
+    }
+
+    if (rc) {       // success or error.
+        head_avail = TSIOBufferReaderAvail(head_reader);
+        content_length = head_avail + cl - dup_pos;
+    }
+
+    return rc;
+}
+
+int64_t
+FlvTag::write_out(TSIOBuffer buffer)
+{
+    int64_t     dup_avail, head_avail;
+
+    head_avail = TSIOBufferReaderAvail(head_reader);
+    dup_avail = TSIOBufferReaderAvail(dup_reader);
+
+    if (head_avail > 0) {
+        TSIOBufferCopy(buffer, head_reader, head_avail, 0);
+        TSIOBufferReaderConsume(head_reader, head_avail);
+    }
+
+    if (dup_avail > 0) {
+        TSIOBufferCopy(buffer, dup_reader, dup_avail, 0);
+        TSIOBufferReaderConsume(dup_reader, dup_avail);
+    }
+
+    return head_avail + dup_avail;
 }
 
 int
-FlvTransformContext::process_tag()
-{
-    return (this->*current_handler)();
-}
-
-int
-FlvTransformContext::process_header()
+FlvTag::process_header()
 {
     int64_t     avail;
     char        buf[13];
 
-    avail = TSIOBufferReaderAvail(res_reader);
+    avail = TSIOBufferReaderAvail(tag_reader);
     if (avail < 13)
         return 0;
 
-    IOBufferReaderCopy(res_reader, buf, 13);
+    IOBufferReaderCopy(tag_reader, buf, 13);
     if (buf[0] != 'F' || buf[1] != 'L' || buf[2] != 'V')
         return -1;
 
     if (*(uint32_t*)(buf + 9) != 0)
         return -1;
 
-    TSIOBufferCopy(head_buffer, res_reader, 13, 0);
-    TSIOBufferReaderConsume(res_reader, 13);
+    TSIOBufferCopy(head_buffer, tag_reader, 13, 0);
+    TSIOBufferReaderConsume(tag_reader, 13);
 
-    pos += 13;
+    tag_pos += 13;
 
-    this->current_handler = &FlvTransformContext::process_initial_body;
+    this->current_handler = &FlvTag::process_initial_body;
     return process_initial_body();
 }
 
 int
-FlvTransformContext::process_initial_body()
+FlvTag::process_initial_body()
 {
     int64_t     avail, sz;
     uint32_t    n, ts;
     char        buf[12];
 
-    avail = TSIOBufferReaderAvail(res_reader);
+    avail = TSIOBufferReaderAvail(tag_reader);
 
     do {
         if (avail < 11 + 1)     // tag head + 1 byte
             return 0;
 
-        IOBufferReaderCopy(res_reader, buf, 12);
+        IOBufferReaderCopy(tag_reader, buf, 12);
 
         n = (uint32_t)((uint8_t)buf[1] << 16) +
             (uint32_t)((uint8_t)buf[2] << 8) +
@@ -83,11 +117,11 @@ FlvTransformContext::process_initial_body()
             }
         }
 
-        TSIOBufferCopy(head_buffer, res_reader, sz, 0);
-        TSIOBufferReaderConsume(res_reader, sz);
+        TSIOBufferCopy(head_buffer, tag_reader, sz, 0);
+        TSIOBufferReaderConsume(tag_reader, sz);
         avail -= sz;
 
-        pos += sz;
+        tag_pos += sz;
 
     } while (avail > 0);
 
@@ -95,24 +129,28 @@ FlvTransformContext::process_initial_body()
 
 end:
 
-    this->current_handler = &FlvTransformContext::process_medial_body;
+    TSIOBufferReaderConsume(dup_reader, tag_pos);
+    dup_pos = tag_pos;
+
+    key_found = false;
+    this->current_handler = &FlvTag::process_medial_body;
     return process_medial_body();
 }
 
 int
-FlvTransformContext::process_medial_body()
+FlvTag::process_medial_body()
 {
-    int64_t     avail, sz;
+    int64_t     avail, sz, pass;
     uint32_t    n, ts;
     char        buf[12];
 
-    avail = TSIOBufferReaderAvail(res_reader);
+    avail = TSIOBufferReaderAvail(tag_reader);
 
     do {
         if (avail < 11 + 1)     // tag head + 1 byte
             return 0;
 
-        IOBufferReaderCopy(res_reader, buf, 12);
+        IOBufferReaderCopy(tag_reader, buf, 12);
 
         n = (uint32_t)((uint8_t)buf[1] << 16) +
             (uint32_t)((uint8_t)buf[2] << 8) +
@@ -129,14 +167,33 @@ FlvTransformContext::process_medial_body()
                  (uint32_t)((uint8_t)buf[5] << 8) +
                  (uint32_t)((uint8_t)buf[6]);
 
-            if (ts >= 1000 * start)
+            if (ts <= (uint32_t)(1000 * start)) {
+                pass = tag_pos - dup_pos;
+                if (pass > 0) {
+                    TSIOBufferReaderConsume(dup_reader, pass);
+                    dup_pos = tag_pos;
+                }
+
+                key_found = true;
+
+            } else {
+
+                if (!key_found) {
+                    pass = tag_pos - dup_pos;
+                    if (pass > 0) {
+                        TSIOBufferReaderConsume(dup_reader, pass);
+                        dup_pos = tag_pos;
+                    }
+                }
+
                 return 1;
+            }
         }
 
-        TSIOBufferReaderConsume(res_reader, sz);
+        TSIOBufferReaderConsume(tag_reader, sz);
         avail -= sz;
 
-        pos += sz;
+        tag_pos += sz;
 
     } while (avail > 0);
 

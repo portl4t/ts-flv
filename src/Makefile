@@ -4,7 +4,7 @@ COMPILE = $(CXX) -Wall -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -g
 INC_PATH =
 LIB_PATH = -L/usr/local/lib
 
-SHARED_OBJS = flv.lo flv_common.lo
+SHARED_OBJS = flv.lo flv_tag.lo
 
 ALL_OBJS = $(SHARED_OBJS)
 

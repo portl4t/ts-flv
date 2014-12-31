@@ -11,6 +11,8 @@
 #include <ts/experimental.h>
 #include <ts/remap.h>
 
+#include "flv_tag.h"
+
 
 #define REMOVE_HEADER(bufp, hdr_loc, name, len) \
     do { \
@@ -50,20 +52,16 @@ public:
 };
 
 
-class FlvTransformContext;
-typedef int (FlvTransformContext::*FTCHandler) ();
-
 class FlvTransformContext
 {
 public:
-    FlvTransformContext(float s, int64_t n): current_handler(NULL), total(0), pos(0),
-        cl(n), content_length(0), start(s), parse_over(false), key_found(false)
+    FlvTransformContext(float s, int64_t n): total(0), parse_over(false)
     {
         res_buffer = TSIOBufferCreate();
         res_reader = TSIOBufferReaderAlloc(res_buffer);
 
-        head_buffer = TSIOBufferCreate();
-        head_reader = TSIOBufferReaderAlloc(head_buffer);
+        ftag.start = s;
+        ftag.cl = n;
     }
 
     ~FlvTransformContext()
@@ -75,41 +73,16 @@ public:
         if (res_buffer) {
             TSIOBufferDestroy(res_buffer);
         }
-
-        if (head_reader) {
-            TSIOBufferReaderFree(head_reader);
-        }
-
-        if (head_buffer) {
-            TSIOBufferDestroy(head_buffer);
-        }
     }
-
-    void init();
-
-    int process_tag();
-
-    int process_header();
-    int process_initial_body();
-    int process_medial_body();
 
 public:
     IOHandle            output;
     TSIOBuffer          res_buffer;
     TSIOBufferReader    res_reader;
-    TSIOBuffer          head_buffer;
-    TSIOBufferReader    head_reader;
+    FlvTag              ftag;
 
-    FTCHandler          current_handler;
     int64_t             total;
-    int64_t             pos;
-    int64_t             cl;
-    int64_t             content_length;
-
-    float               start;
-
     bool                parse_over;
-    bool                key_found;
 };
 
 

@@ -9,7 +9,6 @@ static void flv_read_response(FlvContext *fc, TSHttpTxn txnp);
 static void flv_add_transform(FlvContext *fc, TSHttpTxn txnp);
 static int flv_transform_entry(TSCont contp, TSEvent event, void *edata);
 static int flv_transform_handler(TSCont contp, FlvContext *fc);
-static int flv_parse_tag(FlvTransformContext *ftc, bool body_complete);
 
 
 TSReturnCode
@@ -233,7 +232,6 @@ flv_add_transform(FlvContext *fc, TSHttpTxn txnp)
         return;
 
     ftc = new FlvTransformContext(fc->start, fc->cl);
-    ftc->init();
 
     TSHttpTxnUntransformedRespCache(txnp, 1);
     TSHttpTxnTransformedRespCache(txnp, 0);
@@ -283,12 +281,14 @@ flv_transform_handler(TSCont contp, FlvContext *fc)
     TSVConn             output_conn;
     TSVIO               input_vio;
     TSIOBufferReader    input_reader;
-    int64_t             avail, toread, upstream_done, head_avail;
+    int64_t             avail, toread, upstream_done, tag_avail;
     int                 ret;
     bool                write_down;
+    FlvTag              *ftag;
     FlvTransformContext *ftc;
 
     ftc = fc->ftc;
+    ftag = &(ftc->ftag);
 
     output_conn = TSTransformOutputVConnGet(contp);
     input_vio = TSVConnWriteVIOGet(contp);
@@ -313,7 +313,7 @@ flv_transform_handler(TSCont contp, FlvContext *fc)
     write_down = false;
 
     if (!ftc->parse_over) {
-        ret = flv_parse_tag(ftc, toread <= 0);
+        ret = ftag->process_tag(ftc->res_reader, toread <= 0);
         if (ret == 0)
             goto trans;
 
@@ -321,13 +321,11 @@ flv_transform_handler(TSCont contp, FlvContext *fc)
 
         ftc->output.buffer = TSIOBufferCreate();
         ftc->output.reader = TSIOBufferReaderAlloc(ftc->output.buffer);
-        ftc->output.vio = TSVConnWrite(output_conn, contp, ftc->output.reader, ftc->content_length);
+        ftc->output.vio = TSVConnWrite(output_conn, contp, ftc->output.reader, ftag->content_length);
 
-        head_avail = TSIOBufferReaderAvail(ftc->head_reader);
-        if (head_avail > 0) {
-            TSIOBufferCopy(ftc->output.buffer, ftc->head_reader, head_avail, 0);
-            ftc->total += head_avail;
-
+        tag_avail = ftag->write_out(ftc->output.buffer);
+        if (tag_avail > 0) {
+            ftc->total += tag_avail;
             write_down = true;
         }
     }
@@ -357,24 +355,6 @@ trans:
     return 1;
 }
 
-static int
-flv_parse_tag(FlvTransformContext *ftc, bool body_complete)
-{
-    int         ret;
-    int64_t     avail;
-
-    ret = ftc->process_tag();
-
-    if (ret == 0 && body_complete)
-        ret = -1;
-
-    if (ret) {      // success or error.
-        avail = TSIOBufferReaderAvail(ftc->head_reader);
-        ftc->content_length = avail + ftc->cl - ftc->pos;
-    }
-
-    return ret;
-}
 
 char *
 ts_arg(const char *param, size_t param_len, const char *key, size_t key_len, size_t *val_len)
